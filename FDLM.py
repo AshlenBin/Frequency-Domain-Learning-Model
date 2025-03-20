@@ -13,6 +13,7 @@ import os
 TIME_ID = time.strftime('%Y%m%d_%H%M%S', time.localtime(time.time()))
 IMAGE_DIR = 'images/' + TIME_ID
 MODEL_DIR ='models/'
+PRINT_EPOCHS = 250
 if(not os.path.exists(IMAGE_DIR)):
     os.makedirs(IMAGE_DIR)
 if(not os.path.exists(MODEL_DIR)):
@@ -23,7 +24,7 @@ test_T = np.array([2,5,8,19,40,43,50])  # 周期
 test_amplitudes = np.array([1,2,3,4,5,2,7])  # 振幅
 test_phases = np.array([1,0,2,1,-2,0,-1])  # 相位
 
-class FAN_plus(nn.Module):
+class FDLM(nn.Module):
     def __init__(self, train_data,max_period=None,included_times=None,device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')):
         '''
         train_data: 时域上的训练数据，numpy.ndarray或List格式
@@ -153,8 +154,8 @@ class FAN_plus(nn.Module):
         relu = torch.functional.F.relu
         def trainable_amplitudes_regularization(trainable_amplitudes):
             # 把可训练参数 $A_{T}$ 的取值范围约束在 $[0,+∞]$
-            loss = relu( -trainable_amplitudes )
-            loss = torch.sum(loss**2)*5
+            loss = relu( -trainable_amplitudes + 0.5 )
+            loss = torch.sum(loss**2)
             # print('amplitudes_regularization_loss:',loss)
             return loss
         
@@ -168,8 +169,8 @@ class FAN_plus(nn.Module):
             # 频率汇聚损失函数，使得频率尽可能集中到单个频率上
             # 具体操作方式就是计算每5个频率之间的信息熵，使得信息熵尽量小
             A = self.trainable_amplitudes.view(1,-1)
-            A = A**2  # 把负的振幅变成正的，同时让大的越大，小的越小
-            
+            A = relu(A)+relu(-A)  # 把负的振幅变成正的，同时让大的越大，小的越小
+            A = torch.log(A+1)
             A_sum =  A.unfold(dimension=1, size=SCALE, step=1).sum(dim=2).squeeze(0)
             A = A.squeeze(0)
             log_sum = torch.log(A_sum)
@@ -192,18 +193,18 @@ class FAN_plus(nn.Module):
             loss = basic_loss_func(y_pred,y_true)
             loss += trainable_amplitudes_regularization(self.trainable_amplitudes)
             loss += trainable_phases_regularization(self.trainable_phases)
-            loss += 0.1*frequency_aggregation_loss_function(3) # 频率汇聚
+            # loss += 0.1*frequency_aggregation_loss_function(3) # 频率汇聚
             loss += 0.5*frequency_aggregation_loss_function(7) # 频率汇聚
-            loss += amplitudes_to_less() 
+            # loss += amplitudes_to_less() 
             return loss
         
         return total_loss_func
     
     def train(self,epochs=100,batch_size=256):
         dataloader = DataLoader(self.train_dataset,batch_size=batch_size,shuffle=True)
-        optimizer = torch.optim.Adam(self.parameters(),lr=0.01)
+        optimizer = torch.optim.Adam(self.parameters(),lr=0.05)
         loss_func = self.regularization_loss_func(torch.nn.MSELoss())
-        for epoch in range(epochs):
+        for epoch in range(epochs+1):
             super().train()
             # 在频域上训练
             for Tc,frequency_train_data in dataloader:
@@ -217,9 +218,8 @@ class FAN_plus(nn.Module):
             # loss = loss_func(time_pred,self.train_data)
             # loss.backward()
             # optimizer.step()
-            if epoch%100 == 0:
+            if epoch%PRINT_EPOCHS == 0:
                 torch.save(self.state_dict(),os.path.join(MODEL_DIR ,TIME_ID+'.pth') )
-                super().eval()
                 print('epoch:',epoch,'loss:',loss.item())
                 self.draw(epoch)
     
@@ -283,8 +283,8 @@ def func2sequence(func, begin,end):
     return np.array(sequence_data)
 
 train_data = func2sequence(signal_func,0,500)
-model = FAN_plus(train_data,np.max(test_T)+10)
-# model = FAN_plus(train_data,60,included_times=[2,5,8,19,40,43,50])
-model.train(epochs=4000,batch_size=100)
+model = FDLM(train_data,np.max(test_T)+10)
+# model = FDLM(train_data,60,included_times=[2,5,8,19,40,43,50])
+model.train(epochs=10000,batch_size=32)
 
 
