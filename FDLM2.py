@@ -28,7 +28,6 @@ class FDLM(nn.Module):
     def __init__(
         self,
         train_data,
-        max_period=None,
         included_times=None,
         device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
         load_model_path=None
@@ -41,7 +40,6 @@ class FDLM(nn.Module):
                  [1,4,3,1,4,3,1,4,3]]
             即每一行是一条时间序列，每条时间序列相互独立，这样设计只为了并行优化提升效率
             若输入train_data=[1,2,3,1,2,3,1,2,3]则自动转为[[1,2,3,1,2,3,1,2,3]]
-        max_period: 最大周期，默认为训练数据长度【待修改】
         included_times: 指定包含的频率分量的周期，在指定范围以外的频率直接被排除【待修改】
         load_model_path: 从路径加载模型，默认为None，也就是从头开始训练
         """
@@ -60,11 +58,6 @@ class FDLM(nn.Module):
         self.mean = torch.mean(train_data,1,keepdim=True)
         self.train_data = train_data - self.mean  # 给模型的训练数据在用户输入的数据基础上去掉均值，在输出时再加上
 
-        if included_times is not None:
-            self.max_period = max(included_times)
-        else:
-            self.max_period = self.sequence_len//2 if max_period is None else max_period
-        
         self.Kc = torch.arange(1, self.sequence_len//2+1,dtype=torch.long)
         self.periods = self.sequence_len / self.Kc.type(torch.float64).to(self.device) # 常数：周期
 
@@ -148,8 +141,19 @@ class FDLM(nn.Module):
         # 它与trainable_amplitudes做矩乘后frequency_output的维度是：(sin和cos, Tc, sequences_num)
         # 而frequency_train_data的维度是：(Tc, sin和cos（不分开）)
         # 所以记得要做维度转换：frequency_output.transpose(0,1).squeeze(2)
-        # plt.plot(self.frequency_convolution_coefficients_A[0,5, :].cpu().numpy())
+        # id = 57
+        # sin_coefficients_A = A[0][id].cpu().numpy()
+        # sin_coefficients_B = B[0][id].cpu().numpy()
+        # phases = np.ones(len(sin_coefficients_A))
+        # aaa = sin_coefficients_A * np.sin(sin_coefficients_B+phases)
+        # frequencies = (1/self.periods).cpu().numpy()
+        # print(aaa)
+        # plt.figure(figsize=(20,5))
+        # plt.scatter(frequencies,aaa,s=10)
+        # plt.axvline(frequencies[id], color='red', linestyle='--')
+        # plt.grid(True)
         # plt.show()
+        # exit()
 
     def __call__(self, t: torch.Tensor):
         # 前向函数仅用于在应用时输出预测值，不用于训练
@@ -222,19 +226,19 @@ class FDLM(nn.Module):
             loss = basic_loss_func(y_pred, y_true)
             # loss += 0.1*frequency_aggregation_loss_function(3) # 频率汇聚
             # loss += 0.3 * frequency_aggregation_loss_function(5)  # 频率汇聚
-            # loss += 0.3 * frequency_aggregation_loss_function(13)  # 频率汇聚
+            # loss += 0.3 * frequency_aggregation_loss_function(7)  # 频率汇聚
             # loss += 0.2 * frequency_aggregation_loss_function(25)  # 频率汇聚
             loss += amplitudes_to_less()
             return loss
 
         return total_loss_func
 
-    def train(self, epochs=5000, batch_size=256,lr=0.0001,save_model_path=None):
+    def train(self, epochs=5000, batch_size=256,lr=0.01,save_model_path=None):
         frequency_train_data = self.frequency_train_data_culculation(self.train_data)
         Kc = self.Kc.unsqueeze(1)
         train_dataset = TensorDataset(Kc.long(), frequency_train_data)
         dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        optimizer = torch.optim.SGD(self.parameters(), lr=lr,momentum=0.5)  # 不要使用Adam，会导致很多随机零散的频率分量
+        optimizer = torch.optim.Adam(self.parameters(), lr=lr)  # 不要使用Adam，会导致很多随机零散的频率分量
         loss_func = self.regularization_loss_func(torch.nn.MSELoss())
         for epoch in range(epochs + 1):
             super().train()
@@ -285,7 +289,7 @@ class FDLM(nn.Module):
         FREQUENCY_FIELD_COS = True  # 频域图(cos)
         MODEL_AMPLITUDES = True  # 模型振幅
         MODEL_PHASES = 1  # 模型相位
-        FFT_RESULT = True  # 快速傅里叶变换得到的频谱图
+        FFT_RESULT = 1  # 快速傅里叶变换得到的频谱图
         X_AXIS_T = 0  # 横坐标为 周期(True) 或 序列长度的N/x倍(False)
 
         imgs_num = (
@@ -358,23 +362,23 @@ class FDLM(nn.Module):
                         fft_amplitudes = fft_amplitudes[x <= self.max_period]
                         x = x[x <= self.max_period]
                     fft_amplitudes = fft_amplitudes.cpu().numpy()
-                    plt.scatter(x, fft_amplitudes, label="fft_amplitudes", color="blue", marker=".", s=50)
-                    plt.vlines(x, ymin=0, ymax=fft_amplitudes, colors="blue", linestyles="dotted")
+                    plt.scatter(x, fft_amplitudes, label="fft_amplitudes", color="blue", marker="s", s=2,alpha=0.7)
+                    plt.vlines(x, ymin=0, ymax=fft_amplitudes, colors="blue", linestyles="solid",alpha=0.7)
 
-                plt.scatter(Kc,trainable_amplitudes,label="model_amplitudes",color="red",marker=".", s=50,alpha=0.7)
-                plt.vlines(Kc,ymin=0,ymax=trainable_amplitudes,colors="red",linestyles="solid",alpha=0.4)
+                plt.scatter(Kc,trainable_amplitudes,label="model_amplitudes",color="red",marker=".", s=10,alpha=0.7)
+                plt.vlines(Kc,ymin=0,ymax=trainable_amplitudes,colors="red",linestyles="dotted",alpha=0.7)
                 if IDEAL_SIGNAL:
                     if X_AXIS_T:
-                        plt.scatter(test_T, test_amplitudes, color="green", marker="*", s=50)
+                        plt.scatter(test_T, test_amplitudes,label="true_phases", color="green", marker="*", s=10)
                     else:
-                        plt.scatter(self.sequence_len / test_T,test_amplitudes,color="green",marker="*",s=50)
+                        plt.scatter(self.sequence_len / test_T,test_amplitudes,label="true_phases",color="green",marker="*",s=10)
                 plt.grid(True)
                 plt.legend()
 
             if MODEL_PHASES:  # 模型相位
                 plt.subplot(imgs_num, 1, imgs_count)
                 imgs_count += 1
-                
+                plt.axhline(y=2*pi, color='gray', linestyle='--')  # y=2π参考线
                 if FFT_RESULT:  # 快速傅里叶变换得到的频谱图
                     fft_phases = torch.angle(fft_pred)
                     fft_phases = torch.remainder(fft_phases, 2 * pi)
@@ -384,23 +388,30 @@ class FDLM(nn.Module):
                         x = self.sequence_len / x
                         fft_phases = fft_phases[x <= self.max_period]
                         x = x[x <= self.max_period]
+                    fft_amplitudes = torch.abs(fft_pred)*2 / self.sequence_len
+                    fft_amplitudes = fft_amplitudes.cpu().numpy()
+                    alpha = fft_amplitudes**2  # 振幅越小，不透明度越低
+                    alpha = alpha / np.mean(alpha[alpha>np.mean(alpha)]) * 0.8
+                    alpha[alpha > 0.8] = 0.8
                     fft_phases = fft_phases.cpu().numpy()
-                    plt.scatter(x, fft_phases, label="fft_phases", color="blue", marker=".", s=50)
-                    plt.vlines(x, ymin=0, ymax=fft_phases, colors="blue", linestyles="dotted")
+                    plt.scatter(x, fft_phases, color="blue", marker="s", s=2,alpha=alpha)
+                    plt.scatter([], [], label="fft_phases", color="blue", marker="s", s=2,alpha=1) # 用于指定图例样式，因为不透明度不一样
+                    plt.vlines(x, ymin=0, ymax=fft_phases, colors="blue", linestyles="solid",alpha=alpha)
                 
-                alpha = (trainable_amplitudes)**2  # 振幅越小，不透明度越低
-                alpha = alpha / np.mean(alpha) * 0.8
+                alpha = trainable_amplitudes**2  # 振幅越小，不透明度越低
+                alpha = alpha / np.mean(alpha[alpha>np.mean(alpha)]) * 0.8
                 alpha[alpha > 0.8] = 0.8
-                plt.scatter(Kc,trainable_phases,label="model_phases",color="red",marker=".", s=50,alpha=alpha)
-                plt.vlines(Kc,ymin=0,ymax=trainable_phases,colors="red",linestyles="solid",alpha=alpha)
+                plt.scatter(Kc,trainable_phases,color="red",marker=".", s=10,alpha=alpha)
+                plt.scatter([], [], label="model_phases", color="red",marker=".", s=10, alpha=1) # 用于指定图例样式，因为不透明度不一样
+                plt.vlines(Kc,ymin=0,ymax=trainable_phases,colors="red",linestyles="dotted",alpha=alpha)
                 
                 if IDEAL_SIGNAL:
                     if X_AXIS_T:
-                        plt.scatter(test_T, test_phases, color="green", marker="*", s=50)
+                        plt.scatter(test_T, test_phases, label="true_phases", color="green", marker="*", s=50)
                     else:
-                        plt.scatter(self.sequence_len / test_T,test_phases,color="green",marker="*",s=50)
+                        plt.scatter(self.sequence_len / test_T,test_phases, label="true_phases",color="green",marker="*",s=50)
                 plt.grid(True)
-                plt.legend()
+                plt.legend(loc='upper right')
         if epoch is not None:
             plt.savefig(os.path.join(IMAGE_DIR, f"epoch{epoch}.png"),bbox_inches="tight")
             plt.close()
@@ -433,23 +444,32 @@ test_amplitudes /= np.max(test_amplitudes) / 2  # 归一化
 test_phases =     np.array([1, 0,  2,  1,1.2,0.5,3.2,0.3,2.5,  3, 4.2, 3.4])  # 相位
 noisy = 0
 
-train_data = func2sequence(signal_func,0,1500,noisy=noisy)
+# test_T =   90
+# test_amplitudes = 1
+# test_phases = 2
+# noisy = 0
+
+train_data = func2sequence(signal_func,0,1700,noisy=noisy)
+
 
 model = FDLM(train_data)
-model.train(epochs=10000,batch_size=32,lr=0.00001)
+# model = FDLM(train_data,load_model_path=r"models\20250419_154538.pth")
+
+model.train(epochs=100,batch_size=254,lr=0.01)
 model.draw(epoch=None)
 exit()
 
 
 from datasets import export_mako
 
-# train_data = export_mako.export("mako6", 10, 10)
-# train_data = torch.tensor(train_data, device="cuda")
-# train_data = train_data / torch.std(train_data) / 2
+train_data = export_mako.export("mako6", 10, 10)
+train_data = torch.tensor(train_data, device="cuda")
+train_data = train_data / torch.std(train_data) / 2
 
-# model = FDLM(train_data, max_period=2000,load_model_path=r"models\20250408_164415.pth")
-# model.draw(epoch=None)
-# model.train(epochs=20000, batch_size=1024)
+model = FDLM(train_data)
+model.train(epochs=10000, batch_size=256)
+model.draw(epoch=None)
+exit()
 
 train_data = export_mako.export_retangle("mako6", [10, 30], [10,30])
 train_data = torch.tensor(train_data)

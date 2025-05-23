@@ -93,18 +93,41 @@ class FDLM(nn.Module):
         fft_preds = torch.fft.rfft(self.train_data)
         fft_amplitudes = torch.abs(fft_preds)*2 / self.sequence_len 
         fft_phases = torch.angle(fft_preds).remainder_( 2 * pi)
-        self.trainable_k = nn.Parameter(
-            torch.arange(1,self.sequence_len//2+1,dtype=torch.float32,device=device)
-            .unsqueeze(0).repeat(self.sequence_num,1)
-            )  # 可训练参数：频率分量
-        self.trainable_amplitudes = nn.Parameter(fft_amplitudes[:,1:].type(torch.float32).to(self.device))  # 可训练参数：振幅
-        self.trainable_phases = nn.Parameter(fft_phases[:,1:].type(torch.float32).to(self.device))  # 可训练参数：相位
 
+        for i in range(self.sequence_num):
+            k = nn.Parameter(torch.arange(1,self.sequence_len//2+1,dtype=torch.float32,device=device))  # 可训练参数：频率分量
+            amplitudes = nn.Parameter(fft_amplitudes[i][1:].type(torch.float32).to(self.device))  # 可训练参数：振幅
+            phases = nn.Parameter(fft_phases[i][1:].type(torch.float32).to(self.device))  # 可训练参数：相位
+            self.__trainable_k.append(k)
+            self.__trainable_amplitudes.append(amplitudes)
+            self.__trainable_phases.append(phases)
+            self.params_dict.append({'params': [k, amplitudes, phases]})
+        self.stacked_params_renew()
         
         if load_model_path is not None:
             self.load_state_dict(torch.load(load_model_path))
             print("load model from: ", load_model_path)
     
+    stacked_trainable_k:torch.Tensor = None
+    stacked_trainable_amplitudes:torch.Tensor = None
+    stacked_trainable_phases:torch.Tensor = None
+    def stacked_params_renew(self):
+        # torch.stack在self.__trainable_k发生改变之后并不会自动改变，所以每次迭代之后都要重新计算一次
+        self.stacked_trainable_k = torch.stack(list(self.__trainable_k))
+        self.stacked_trainable_amplitudes = torch.stack(list(self.__trainable_amplitudes))
+        self.stacked_trainable_phases = torch.stack(list(self.__trainable_phases))
+    @property
+    def trainable_k(self):
+        return self.stacked_trainable_k
+    @property
+    def trainable_amplitudes(self):
+        return self.stacked_trainable_amplitudes
+
+    @property
+    def trainable_phases(self):
+        return self.stacked_trainable_phases
+
+
     def load_model(self, model_path):
         self.load_state_dict(torch.load(model_path))
         print("load model from: ", model_path)
@@ -267,7 +290,7 @@ class FDLM(nn.Module):
         train_dataset = TensorDataset(kc.unsqueeze(1), frequency_train_data)
         dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         # optimizer = torch.optim.SGD(self.parameters(), lr=lr)
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        optimizer = torch.optim.Adam(self.params_dict, lr=lr)
         loss_func = self.regularization_loss_func(torch.nn.MSELoss())
         self.draw('_init',None,frequency_train_data)
         
@@ -282,25 +305,27 @@ class FDLM(nn.Module):
                 kc = kc.to(self.device)
                 frequency_labels = frequency_labels.to(self.device)
                 optimizer.zero_grad()
-                # tttt = time.time()
+                self.stacked_params_renew()
+                tttt = time.time()
                 frequency_pred = self.model_output_FREQUENCY(kc)
-                # time1 += time.time() - tttt
+                time1 += time.time() - tttt
                 
-                # tttt = time.time()
+                tttt = time.time()
                 loss = loss_func(frequency_pred, frequency_labels)
-                # time2 += time.time() - tttt
+                time2 += time.time() - tttt
                 # print(loss.item())
-                # tttt = time.time()
+                tttt = time.time()
                 loss.backward()
-                # time3 += time.time() - tttt
+                time3 += time.time() - tttt
                 optimizer.step()
-                # print("time1:", time1, "time2:", time2, "time3:", time3)
+                print("time1:", time1, "time2:", time2, "time3:", time3)
                 
-            if epoch % 10 == 0:  # 保持振幅为正数，相位在[0,2π]范围内
-                with torch.no_grad():
-                    self.trainable_phases[self.trainable_amplitudes < 0] += pi
-                    self.trainable_phases.remainder_( 2 * pi) # 取余
-                    torch.abs_(self.trainable_amplitudes)
+                if epoch % 10 == 0:  # 保持振幅为正数，相位在[0,2π]范围内
+                    with torch.no_grad():
+                        for i in range(self.sequence_num):
+                            self.__trainable_phases[i][self.__trainable_amplitudes[i] < 0] += pi
+                            self.__trainable_phases[i].remainder_( 2 * pi) # 取余
+                            self.__trainable_amplitudes[i].abs_()
             # 在时域上训练
             # train_t = torch.arange(0,self.sequence_len,dtype=torch.float32,device=self.device).unsqueeze(1)
             # time_pred = self.model_output_TIME(train_t,window_size).squeeze(1)
@@ -547,12 +572,13 @@ def test_sd():
     train_data = test_data
     # train_data = torch.tensor(test_data[:700], device="cuda")
     # test_data = [np.arange(len(test_data)),test_data]
-    step = 100
-    for i in range(100,train_data.shape[0],step):
+    step = 5
+    for i in range(0,train_data.shape[0],step):
         if(i>1000): break
     # for i in range(1):
         model = FDLM(train_data[i:i+step])
         model.train(epochs=500, batch_size=512,lr=0.01,save_model_path=f"models/Re160[{i}~{i+step}].pth")
+        exit()
     # model.load_model(r"models\Re160.pth")
     model.draw(epoch=None)
     # exit()
