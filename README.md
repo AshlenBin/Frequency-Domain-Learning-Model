@@ -11,4 +11,6 @@ python FDLM.py
 ```
 
 ## 简要原理
-![image](https://github.com/user-attachments/assets/ec2fb01c-9755-4479-9601-b38837128784)
+![image](https://github.com/user-attachments/assets/c55210a6-49f0-41ff-bc59-71aab4557cee)
+![image](https://github.com/user-attachments/assets/c483aa6f-26ae-4965-91b0-dfc426227869)
+
